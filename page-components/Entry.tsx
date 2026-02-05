@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useMemo } from 'react';
 import AccretionDiskVisualization from '@/components/accretion-disk-visualization';
 
 import { motion, AnimatePresence, useMotionValue, useTransform, animate } from 'framer-motion';
@@ -9,11 +9,15 @@ export default function Entry() {
   const [hovering, setHovering] = useState(false);
   const [approaching, setApproaching] = useState(false);
   const [ready, setReady] = useState(false);
-  const [fps, setFps] = useState(60);
-  const [qualityTier, setQualityTier] = useState('HIGH');
-  
-  // Detect reduced motion preference
-  const prefersReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  // Detect reduced motion preference (SSR-safe)
+  const [prefersReducedMotion, setPrefersReducedMotion] = useState(false);
+
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      setPrefersReducedMotion(window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+    }
+  }, []);
   
   // Use refs instead of setState for continuous values (kills jitter)
   const zoomRef = useRef(1.0);

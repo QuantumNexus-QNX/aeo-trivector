@@ -1,6 +1,6 @@
 'use client'
 
-import { useRef, useMemo } from 'react';
+import { useRef, useMemo, useState, useEffect } from 'react';
 import { useFrame } from '@react-three/fiber';
 import * as THREE from 'three';
 
@@ -10,17 +10,24 @@ interface AttractorProps {
   speed?: number;
 }
 
-export function Attractor({ 
-  count = 10000, 
+export function Attractor({
+  count = 10000,
   opacity = 0.6,
-  speed = 0.5 
+  speed = 0.5
 }: AttractorProps) {
+  // SSR-safe device detection
+  const [isMobile, setIsMobile] = useState(false);
+  const [prefersReducedMotion, setPrefersReducedMotion] = useState(false);
+
+  useEffect(() => {
+    if (typeof window !== 'undefined' && typeof navigator !== 'undefined') {
+      setIsMobile(/Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent));
+      setPrefersReducedMotion(window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+    }
+  }, []);
+
   // Optimize particle count for mobile devices
-  const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
   const optimizedCount = isMobile ? Math.min(count, 3000) : count;
-  
-  // Detect reduced motion preference
-  const prefersReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
   
   const mesh = useRef<THREE.Points>(null);
   
