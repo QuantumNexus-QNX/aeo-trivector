@@ -1,0 +1,1081 @@
+"use client"
+
+import { useEffect, useRef, useState } from "react"
+
+type QualityTier = "ultra-low" | "low" | "medium" | "high" | "ultra"
+
+function detectQualityTier(): QualityTier {
+  if (typeof window === "undefined") return "medium"
+
+  const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent)
+  const isTablet = /iPad|Android(?!.*Mobile)/i.test(navigator.userAgent)
+  const isIOS = /iPhone|iPad|iPod/i.test(navigator.userAgent)
+  const isOlderAndroid = /Android [1-7]\./i.test(navigator.userAgent)
+
+  const cores = navigator.hardwareConcurrency || 4
+  const memory = (navigator as Navigator & { deviceMemory?: number }).deviceMemory || 4
+  const screenArea = window.screen.width * window.screen.height
+
+  if (isMobile && !isTablet) {
+    if (isOlderAndroid || cores <= 2 || memory <= 1) return "ultra-low"
+    if (cores <= 4 || memory <= 2) return "low"
+    if (isIOS) return "medium"
+    return "medium"
+  }
+
+  if (isTablet) {
+    if (cores <= 2 || memory <= 2) return "low"
+    if (cores <= 4 || memory <= 3) return "medium"
+    return "high"
+  }
+
+  if (cores >= 8 && memory >= 8 && screenArea >= 2073600) return "ultra"
+  if (cores >= 4 && memory >= 4) return "high"
+  if (cores <= 2) return "low"
+  return "medium"
+}
+
+function getQualitySettings(tier: QualityTier) {
+  const settings = {
+    "ultra-low": {
+      maxSteps: 128,
+      pixelRatio: 0.75,
+      diskSamples: 2,
+      jetEnabled: true,
+      bloomEnabled: false,
+      targetFPS: 30,
+      adaptiveStep: 0.05,
+    },
+    low: {
+      maxSteps: 160,
+      pixelRatio: 0.85,
+      diskSamples: 2,
+      jetEnabled: true,
+      bloomEnabled: false,
+      targetFPS: 30,
+      adaptiveStep: 0.045,
+    },
+    medium: {
+      maxSteps: 150,
+      pixelRatio: 0.85,
+      diskSamples: 2,
+      jetEnabled: true,
+      bloomEnabled: false,
+      targetFPS: 50,
+      adaptiveStep: 0.045,
+    },
+    high: {
+      maxSteps: 220,
+      pixelRatio: 1.0,
+      diskSamples: 2,
+      jetEnabled: true,
+      bloomEnabled: true,
+      targetFPS: 60,
+      adaptiveStep: 0.035,
+    },
+    ultra: {
+      maxSteps: 300,
+      pixelRatio: 1.2,
+      diskSamples: 3,
+      jetEnabled: true,
+      bloomEnabled: true,
+      targetFPS: 60,
+      adaptiveStep: 0.025,
+    },
+  }
+  return settings[tier]
+}
+
+interface AccretionDiskVisualizationProps {
+  cameraZoom?: number;          // target
+  hover?: number;               // target (0-1)
+  lensStrength?: number;        // target
+  viewYaw?: number;             // pointer for view-dependent shading
+  viewPitch?: number;           // pointer for view-dependent shading
+  
+  // Look controls
+  exposure?: number;
+  gamma?: number;
+  highlightKnee?: number;
+  ringBloomStrength?: number;  // 0.3-0.5 range
+  
+  // Redshift amplification (visual mapping only)
+  shiftExponent?: number;       // 1.2-2.2
+  
+  // Red/blue balance tuning
+  dopplerBlueStrength?: number; // subtle
+  redshiftWarmStrength?: number;// stronger
+}
+
+export default function AccretionDiskVisualization({ 
+  cameraZoom = 1.0, 
+  hover = 0.0,
+  lensStrength = 1.0,
+  viewYaw = 0.0, 
+  viewPitch = 0.0,
+  exposure = 1.0,
+  gamma = 2.2,
+  highlightKnee = 1.0,
+  ringBloomStrength = 0.3,
+  shiftExponent = 1.0,
+  dopplerBlueStrength = 1.0,
+  redshiftWarmStrength = 1.0
+}: AccretionDiskVisualizationProps = {}) {
+  const canvasRef = useRef<HTMLCanvasElement>(null)
+  const [webglError, setWebglError] = useState(false)
+  const [shaderError, setShaderError] = useState<string | null>(null)
+  
+  // Refs for smooth animation - two layers: target (from props) and current (smoothed)
+  const targets = useRef({ zoom: 1.0, hover: 0.0, lens: 1.0, yaw: 0.0, pitch: 0.0 })
+  const current = useRef({ zoom: 1.0, hover: 0.0, lens: 1.0, yaw: 0.0, pitch: 0.0 })
+  
+  // Update targets from props (no setState, just ref updates)
+  useEffect(() => { targets.current.zoom = cameraZoom }, [cameraZoom])
+  useEffect(() => { targets.current.hover = hover }, [hover])
+  useEffect(() => { targets.current.lens = lensStrength }, [lensStrength])
+  useEffect(() => { targets.current.yaw = viewYaw }, [viewYaw])
+  useEffect(() => { targets.current.pitch = viewPitch }, [viewPitch])
+
+  useEffect(() => {
+    const canvas = canvasRef.current
+    if (!canvas) return
+
+    const qualityTier = detectQualityTier()
+    const quality = getQualitySettings(qualityTier)
+
+    const isAndroid = /Android/i.test(navigator.userAgent)
+
+    let glContext: WebGL2RenderingContext | WebGLRenderingContext | null = null
+    let isWebGL2 = true
+
+    const contextOptions: WebGLContextAttributes = {
+      alpha: false,
+      antialias: qualityTier === "high" || qualityTier === "ultra",
+      powerPreference: qualityTier === "ultra-low" || qualityTier === "low" ? "low-power" : "high-performance",
+      failIfMajorPerformanceCaveat: false,
+      preserveDrawingBuffer: false,
+      desynchronized: true,
+    }
+
+    try {
+      glContext = canvas.getContext("webgl2", contextOptions) as WebGL2RenderingContext | null
+    } catch (e) {
+      console.warn("WebGL2 context creation failed, trying WebGL1")
+    }
+
+    if (!glContext) {
+      isWebGL2 = false
+      try {
+        glContext = canvas.getContext("webgl", contextOptions) as WebGLRenderingContext | null
+        if (!glContext) {
+          glContext = canvas.getContext("experimental-webgl", contextOptions) as WebGLRenderingContext | null
+        }
+      } catch (e) {
+        console.error("WebGL context creation failed")
+      }
+    }
+
+    if (!glContext) {
+      setWebglError(true)
+      return
+    }
+
+    console.log("[v0] Device:", {
+      userAgent: navigator.userAgent,
+      isAndroid,
+      qualityTier,
+      webglVersion: isWebGL2 ? "WebGL2" : "WebGL1",
+      canvasSize: { width: canvas.width, height: canvas.height },
+      windowSize: { width: window.innerWidth, height: window.innerHeight },
+      devicePixelRatio: window.devicePixelRatio,
+    })
+
+    let contextLost = false
+    canvas.addEventListener("webglcontextlost", (e) => {
+      e.preventDefault()
+      contextLost = true
+    })
+
+    canvas.addEventListener("webglcontextrestored", () => {
+      contextLost = false
+      window.location.reload()
+    })
+
+    const versionPrefix = isWebGL2 ? "#version 300 es" : ""
+    const inKeyword = isWebGL2 ? "in" : "attribute"
+    const outKeyword = isWebGL2 ? "out" : "varying"
+    const fragInKeyword = isWebGL2 ? "in" : "varying"
+    const fragOutKeyword = isWebGL2 ? "out vec4 fragColor;" : ""
+    const fragColorVar = isWebGL2 ? "fragColor" : "gl_FragColor"
+
+    const vertexShaderSource = `${versionPrefix}
+      ${inKeyword} vec2 a_position;
+      ${outKeyword} vec2 v_uv;
+      void main() {
+        v_uv = a_position * 0.5 + 0.5;
+        gl_Position = vec4(a_position, 0.0, 1.0);
+      }
+    `
+
+    const fragmentShaderSource = `${versionPrefix}
+      precision highp float;
+      precision highp int;
+      
+      ${fragInKeyword} vec2 v_uv;
+      ${fragOutKeyword}
+      
+      uniform float u_time;
+      uniform vec2 u_resolution;
+      uniform float u_cameraZoom;
+      uniform float u_viewYaw;   // Mouse-driven view angle (horizontal)
+      uniform float u_viewPitch; // Mouse-driven view angle (vertical)
+      
+      // Hover interaction (0-1)
+      uniform float u_hover;           // Default 0.0
+      
+      // Tone mapping and look controls (physics-preserving)
+      uniform float u_exposure;        // Default 1.0
+      uniform float u_gamma;           // Default 2.2
+      uniform float u_highlightKnee;   // Default 1.0
+      uniform float u_ringBloomStrength; // Default 0.3
+      uniform float u_ringBloomRadius;   // Default 0.15
+      
+      // Redshift amplification (visual mapping only)
+      uniform float u_shiftExponent;      // 1.2-2.2
+      uniform float u_dopplerBlueStrength;  // subtle
+      uniform float u_redshiftWarmStrength; // stronger
+      uniform float u_androidBoost;       // Android color/brightness boost (1.0 = no boost)
+      
+      const float PI = 3.14159265359;
+      const float RS = 0.6;
+      const float M = 0.3; // Black hole mass (RS = 2M)
+      const float ISCO = 3.6; // Innermost Stable Circular Orbit = 6M
+      const float PHOTON_RING = 1.56; // Critical impact radius b_c = 3√3 M ≈ 5.196M
+      const float DISK_INNER = ISCO;
+      
+      // Screen-space lens warp: α(b) ≈ 4M/b + 15πM²/b²
+      // Cheap radial deflection for dramatic Einstein ring
+      vec2 applyLensWarp(vec2 fragCoord, vec2 resolution, float strength) {
+        vec2 center = resolution * 0.5;
+        vec2 delta = fragCoord - center;
+        float b = length(delta) / min(resolution.x, resolution.y);
+        
+        if (b < 0.001) return fragCoord; // Avoid singularity at center
+        
+        // Gravitational deflection angle
+        float alpha = (4.0 * M / b) + (15.0 * PI * M * M / (b * b));
+        
+        // Apply deflection (warp inward toward black hole)
+        float warpAmount = alpha * strength * 0.02; // Scale factor for visual effect
+        vec2 warpedDelta = delta * (1.0 - warpAmount);
+        
+        return center + warpedDelta;
+      }
+      const float DISK_OUTER = 6.0;
+      const int MAX_STEPS = ${quality.maxSteps};
+      const float INCLINATION = 0.1045;
+      const float ADAPTIVE_STEP = ${quality.adaptiveStep.toFixed(4)};
+      
+      // Hash function (must be declared before starfield functions)
+      float hash(vec2 p) {
+        vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+        p3 = p3 + dot(p3, p3.yzx + 33.33);
+        return fract((p3.x + p3.y) * p3.z);
+      }
+      
+      // Procedural starfield generation
+      // Multi-octave noise for star distribution
+      float starNoise(vec2 p) {
+        float n = 0.0;
+        float amp = 1.0;
+        float freq = 1.0;
+        for (int i = 0; i < 3; i++) {
+          n += hash(p * freq) * amp;
+          freq *= 2.3;
+          amp *= 0.5;
+        }
+        return n;
+      }
+      
+      // Generate starfield with multiple layers and parallax
+      vec3 generateStarfield(vec2 uv, float depth) {
+        vec3 stars = vec3(0.0);
+        
+        // Three layers of stars at different depths
+        for (int layer = 0; layer < 3; layer++) {
+          float layerDepth = 1.0 + float(layer) * 0.5; // 1.0, 1.5, 2.0
+          vec2 starUV = uv * (10.0 + float(layer) * 5.0) / layerDepth; // Parallax
+          
+          // Grid-based star placement
+          vec2 gridID = floor(starUV);
+          vec2 gridUV = fract(starUV);
+          
+          // Random star position within cell
+          float starHash = hash(gridID + vec2(float(layer) * 100.0));
+          
+          // Star density threshold (fewer stars in far layers)
+          float densityThreshold = 0.985 - float(layer) * 0.003;
+          
+          if (starHash > densityThreshold) {
+            // Star position within cell (0.2-0.8 to avoid edges)
+            vec2 starPos = vec2(
+              hash(gridID + vec2(1.0, float(layer))),
+              hash(gridID + vec2(2.0, float(layer)))
+            ) * 0.6 + 0.2;
+            
+            float dist = length(gridUV - starPos);
+            
+            // Star size varies with hash
+            float starSize = (hash(gridID + vec2(3.0, float(layer))) * 0.5 + 0.5) * 0.015;
+            starSize /= layerDepth; // Smaller stars in distance
+            
+            // Star brightness
+            float brightness = hash(gridID + vec2(4.0, float(layer))) * 0.6 + 0.4;
+            
+            // Subtle twinkling
+            float twinkle = sin(u_time * 2.0 + starHash * 100.0) * 0.15 + 0.85;
+            brightness *= twinkle;
+            
+            // Star intensity (Gaussian falloff)
+            float intensity = exp(-dist * dist / (starSize * starSize)) * brightness;
+            intensity /= (layerDepth * layerDepth); // Dimmer stars in distance
+            
+            // Star color (slight variation - blue to white to yellow)
+            float colorTemp = hash(gridID + vec2(5.0, float(layer)));
+            vec3 starColor;
+            if (colorTemp < 0.3) {
+              starColor = vec3(0.8, 0.9, 1.0); // Blue-white
+            } else if (colorTemp < 0.7) {
+              starColor = vec3(1.0, 1.0, 1.0); // White
+            } else {
+              starColor = vec3(1.0, 0.95, 0.8); // Yellow-white
+            }
+            
+            stars += starColor * intensity;
+          }
+        }
+        
+        return stars;
+      }
+      
+      // Smooth turbulence using only sine waves - no grid artifacts
+      float smoothTurb(vec2 p, float t) {
+        float v = 0.0;
+        // Layer 1 - large scale swirls
+        v = v + sin(p.x * 1.2 + t * 0.7) * cos(p.y * 0.9 - t * 0.5) * 0.5;
+        // Layer 2 - medium detail
+        v = v + sin(p.x * 2.3 - t * 1.1 + p.y * 1.8) * 0.3;
+        v = v + cos(p.y * 2.7 + t * 0.9 - p.x * 0.6) * 0.25;
+        // Layer 3 - fine detail flowing
+        v = v + sin(p.x * 4.1 + p.y * 3.2 + t * 1.5) * 0.15;
+        v = v + cos(p.x * 3.5 - p.y * 4.0 - t * 1.3) * 0.12;
+        // Layer 4 - very fine shimmer
+        v = v + sin(p.x * 6.0 + t * 2.0) * cos(p.y * 5.5 - t * 1.8) * 0.08;
+        return v * 0.5 + 0.5;
+      }
+      
+      // Physically accurate temperature gradient T(r) ∝ r^(-3/4)
+      vec3 diskColor(float r, float temp) {
+        // Temperature profile: T(r) ∝ r^(-3/4) (standard thin disk)
+        float tempProfile = pow(DISK_INNER / max(r, DISK_INNER), 0.75);
+        float t = 1.0 - tempProfile;  // 0 = hot (inner), 1 = cool (outer)
+        t = clamp(t, 0.0, 1.0);
+        
+        // Color palette: white → pale yellow → gold → orange → amber → red-brown
+        vec3 white = vec3(1.5, 1.5, 1.45);
+        vec3 paleYellow = vec3(1.4, 1.35, 1.0);
+        vec3 gold = vec3(1.3, 1.0, 0.5);
+        vec3 orange = vec3(1.2, 0.65, 0.2);
+        vec3 amber = vec3(1.0, 0.45, 0.12);
+        vec3 redBrown = vec3(0.7, 0.25, 0.08);
+        
+        vec3 c;
+        if (t < 0.2) {
+          c = mix(white, paleYellow, t * 5.0);
+        } else if (t < 0.4) {
+          c = mix(paleYellow, gold, (t - 0.2) * 5.0);
+        } else if (t < 0.6) {
+          c = mix(gold, orange, (t - 0.4) * 5.0);
+        } else if (t < 0.8) {
+          c = mix(orange, amber, (t - 0.6) * 5.0);
+        } else {
+          c = mix(amber, redBrown, (t - 0.8) * 5.0);
+        }
+        
+        return c + vec3(0.25, 0.15, 0.05) * temp;
+      }
+      
+      // Volumetric disk sampling - samples density at any 3D point
+      vec4 sampleDiskVolume(vec3 pos, vec3 vel) {
+        float r = sqrt(pos.x * pos.x + pos.z * pos.z);
+        float absY = abs(pos.y);
+        
+        // Disk thickness varies with radius - thicker at outer edge
+        float diskThickness = 0.08 + 0.12 * smoothstep(DISK_INNER, DISK_OUTER, r);
+        
+        // Smooth vertical density falloff (no hard edges)
+        float verticalDensity = exp(-absY * absY / (diskThickness * diskThickness * 2.0));
+        
+        if (r < DISK_INNER * 0.9 || r > DISK_OUTER * 1.1 || verticalDensity < 0.01) {
+          return vec4(0.0);
+        }
+        
+        // Radial density falloff
+        float radialDensity = smoothstep(DISK_INNER * 0.9, DISK_INNER * 1.3, r) * 
+                              smoothstep(DISK_OUTER * 1.1, DISK_OUTER * 0.6, r);
+        
+        // Time-based animation - everything flows
+        float t = u_time;
+        
+        // Orbital motion - inner regions move faster (Keplerian)
+        float orbitalSpeed = 8.0 / (r * sqrt(r));
+        float orbitalPhase = t * orbitalSpeed;
+        
+        // Create flowing coordinates that animate smoothly
+        float flowX = pos.x * cos(orbitalPhase) - pos.z * sin(orbitalPhase);
+        float flowZ = pos.x * sin(orbitalPhase) + pos.z * cos(orbitalPhase);
+        
+        // Multiple layers of smooth turbulence at different scales
+        float turb1 = smoothTurb(vec2(flowX * 0.8, flowZ * 0.8), t * 1.5);
+        float turb2 = smoothTurb(vec2(flowX * 1.5 + 5.0, flowZ * 1.2 + 3.0), t * 2.0);
+        float turb3 = smoothTurb(vec2(flowX * 0.4, flowZ * 0.5), t * 0.8);
+        float turbulence = turb1 * 0.5 + turb2 * 0.3 + turb3 * 0.2;
+        
+        // Flowing brightness variations
+        float flow1 = sin(flowX * 1.5 + flowZ * 0.8 + t * 2.0) * 0.5 + 0.5;
+        float flow2 = cos(flowX * 0.9 - flowZ * 1.2 - t * 1.5) * 0.5 + 0.5;
+        float flowBright = flow1 * 0.4 + flow2 * 0.3 + 0.3;
+        
+        // === SPIRAL DENSITY WAVES (very subtle, m=2 mode) ===
+        // S(r,φ,t) = 1 + A*cos(m*φ - ωt + k*ln(r))
+        float angle = atan(pos.z, pos.x);
+        float spiralPhase = 2.0 * angle - t * 0.8 + 2.5 * log(max(r, 0.1));
+        float spiralWave = 1.0 + 0.06 * cos(spiralPhase);
+        flowBright = flowBright * spiralWave;
+        
+        // Radial brightness - hotter near center
+        float radialBright = pow(DISK_INNER / max(r, DISK_INNER), 1.5);
+        
+        // === PROPER RELATIVISTIC DOPPLER FROM SCHWARZSCHILD PHYSICS ===
+        
+        // Orbital velocity: v = sqrt(M/ρ) in geometric units, clamp < 0.7c for stability
+        float vOrb = min(sqrt(RS * 0.5 / max(r, DISK_INNER)), 0.7);
+        
+        // Tangential velocity direction (Keplerian orbit)
+        float orbitDirX = -pos.z / max(r, 0.001);
+        float orbitDirZ = pos.x / max(r, 0.001);
+        
+        // Line of sight direction (from emitter to camera)
+        float velLen = sqrt(vel.x * vel.x + vel.y * vel.y + vel.z * vel.z);
+        float losX = -vel.x / max(velLen, 0.001);
+        float losZ = -vel.z / max(velLen, 0.001);
+        
+        // cos(θ) = velocity · line_of_sight
+        float cosTheta = orbitDirX * losX + orbitDirZ * losZ;
+        
+        // Lorentz factor: γ = 1/sqrt(1 - v²)
+        float gamma = 1.0 / sqrt(max(1.0 - vOrb * vOrb, 0.01));
+        
+        // Relativistic Doppler factor: δ = 1 / [γ(1 - v·cos(θ))]
+        float delta = 1.0 / max(gamma * (1.0 - vOrb * cosTheta), 0.1);
+        
+        // Intensity scales as δ³ (relativistic beaming)
+        float dopplerBright = delta * delta * delta;
+        dopplerBright = clamp(dopplerBright, 0.15, 6.0);
+        
+        // Combine all factors
+        float density = verticalDensity * radialDensity;
+        
+        // Subtle shimmer effect - high-frequency sparkle
+        float shimmerFreq = 8.0;
+        float shimmerPhase = flowX * 20.0 + flowZ * 18.0 + t * shimmerFreq;
+        float shimmer = sin(shimmerPhase) * 0.5 + 0.5;
+        shimmer = shimmer * shimmer; // Square for sharper sparkles
+        float shimmerIntensity = 0.15 * (1.0 - smoothstep(DISK_INNER, DISK_OUTER, r)); // Stronger near inner edge
+        
+        float brightness = radialBright * dopplerBright * (0.4 + turbulence * 0.4 + flowBright * 0.5 + shimmer * shimmerIntensity);
+        
+        // Color based on radius and turbulence
+        float tempVar = turbulence * 0.5;
+        vec3 col = diskColor(r, tempVar) * brightness * 3.5 * u_androidBoost;
+        
+        // === RELATIVISTIC COLOR SHIFT ===
+        // δ > 1 = approaching (blueshift), δ < 1 = receding (redshift)
+        float colorShift = clamp((delta - 1.0) * 1.5, -1.0, 1.0);
+        
+        // Blueshift - shift toward blue/cyan/white
+        if (colorShift > 0.0) {
+          float blueBoost = colorShift * colorShift;
+          col.b = col.b * (1.0 + blueBoost * 3.0) + colorShift * 0.5;
+          col.g = col.g * (1.0 + colorShift * 1.5);
+          col.r = col.r * (1.0 - colorShift * 0.2);
+        }
+        // Redshift - shift toward red/orange
+        else {
+          float redShift = -colorShift;
+          col.r = col.r * (1.0 + redShift * 0.8);
+          col.g = col.g * (1.0 - redShift * 0.4);
+          col.b = col.b * (1.0 - redShift * 0.8);
+        }
+        
+        // === GRAVITATIONAL REDSHIFT (Schwarzschild) ===
+        // g(ρ) = sqrt(1 - 2M/ρ) = sqrt(1 - Rs/ρ)
+        float gravRedshift = sqrt(max(1.0 - RS / max(r, RS * 1.01), 0.01));
+        col = col * gravRedshift;
+        
+        // Additional color shift from gravitational redshift
+        float gravColorShift = (1.0 - gravRedshift) * 3.0;
+        col.b = col.b * (1.0 - gravColorShift * 0.5);
+        col.g = col.g * (1.0 - gravColorShift * 0.2);
+        
+        return vec4(col, density);
+      }
+      
+      ${
+        quality.jetEnabled
+          ? `
+      vec4 sampleJet(vec3 pos) {
+        float absY = abs(pos.y);
+        if (absY < 0.6 || absY > 12.0) return vec4(0.0);
+        
+        float r = sqrt(pos.x * pos.x + pos.z * pos.z);
+        float jetRadius = 0.15 + 0.08 * sqrt(absY);
+        float radialFall = exp(-r * r / (jetRadius * jetRadius * 3.0));
+        
+        if (radialFall < 0.02) return vec4(0.0);
+        
+        float core = exp(-r * r / (jetRadius * jetRadius * 0.3));
+        float baseFade = smoothstep(0.6, 2.5, absY);
+        float tipFade = smoothstep(12.0, 6.0, absY);
+        
+        float wave1 = sin(absY * 0.8 - u_time * 4.0) * 0.5 + 0.5;
+        float wave2 = sin(absY * 0.4 - u_time * 2.8) * 0.5 + 0.5;
+        float smoothWave = wave1 * 0.7 + wave2 * 0.3;
+        
+        float density = radialFall * baseFade * tipFade * (0.5 + 0.4 * smoothWave);
+        
+        vec3 baseColor = vec3(0.35, 0.25, 0.6);
+        vec3 coreColor = vec3(0.7, 0.85, 1.0);
+        vec3 color = mix(baseColor, coreColor, core * core + smoothWave * 0.2);
+        
+        return vec4(color, density * 0.6);
+      }
+      `
+          : ""
+      }
+      
+      void main() {
+        // Calculate lens strength based on zoom (stronger at higher zoom)
+        float lensStrength = smoothstep(1.0, 3.0, u_cameraZoom) * 1.0;
+        
+        // Apply screen-space lens warp before ray marching
+        vec2 warpedFragCoord = applyLensWarp(gl_FragCoord.xy, u_resolution, lensStrength);
+        vec2 uv = (warpedFragCoord - 0.5 * u_resolution) / min(u_resolution.x, u_resolution.y);
+        
+        float camDist = 11.0 / u_cameraZoom;
+        float orbitAngle = u_time * 0.25;
+        
+        float cI = cos(INCLINATION);
+        float sI = sin(INCLINATION);
+        float cO = cos(orbitAngle);
+        float sO = sin(orbitAngle);
+        
+        float camX = sO * cI * camDist;
+        float camY = sI * camDist;
+        float camZ = cO * cI * camDist;
+        
+        float invCamDist = 1.0 / camDist;
+        float fwdX = -camX * invCamDist;
+        float fwdY = -camY * invCamDist;
+        float fwdZ = -camZ * invCamDist;
+        
+        float rightX = cO;
+        float rightY = 0.0;
+        float rightZ = -sO;
+        
+        float upX = rightY * fwdZ - rightZ * fwdY;
+        float upY = rightZ * fwdX - rightX * fwdZ;
+        float upZ = rightX * fwdY - rightY * fwdX;
+        
+        float upLen = sqrt(upX * upX + upY * upY + upZ * upZ);
+        upX = upX / max(upLen, 0.001);
+        upY = upY / max(upLen, 0.001);
+        upZ = upZ / max(upLen, 0.001);
+        
+        float rdX = fwdX + uv.x * rightX + uv.y * upX;
+        float rdY = fwdY + uv.x * rightY + uv.y * upY;
+        float rdZ = fwdZ + uv.x * rightZ + uv.y * upZ;
+        
+        float rdLen = sqrt(rdX * rdX + rdY * rdY + rdZ * rdZ);
+        rdX = rdX / rdLen;
+        rdY = rdY / rdLen;
+        rdZ = rdZ / rdLen;
+        
+        float posX = camX;
+        float posY = camY;
+        float posZ = camZ;
+        float velX = rdX;
+        float velY = rdY;
+        float velZ = rdZ;
+        
+        // Generate starfield background (interacts with lens warp)
+        // Use original unwarped UV for parallax, not warped UV
+        vec2 starfieldUV = (gl_FragCoord.xy - 0.5 * u_resolution) / min(u_resolution.x, u_resolution.y);
+        vec3 color = generateStarfield(starfieldUV, 1.0) * 0.4; // Dim stars so disk is primary focus
+        float alpha = 0.0;
+        float stepSize = ADAPTIVE_STEP;
+        float ringMask = 0.0; // Accumulate photon ring + inner rim contributions
+        
+        // Adaptive quality: increase step size when quality is reduced
+        // Quality scale passed via u_exposure temporarily (will be separated later)
+        float qualityScale = 1.0; // Will be controlled by FPS monitoring
+        float adaptiveStepSize = stepSize / qualityScale;
+        
+        for (int i = 0; i < MAX_STEPS; i++) {
+          // Early exit if fully opaque
+          if (alpha > 0.98) break;
+          
+          // Early exit for reduced quality (skip later steps)
+          if (qualityScale < 1.0 && float(i) > float(MAX_STEPS) * qualityScale) break;
+          
+          float r2 = posX * posX + posY * posY + posZ * posZ;
+          float r = sqrt(r2);
+          
+          if (r < RS) {
+            color = mix(color, vec3(0.0), 1.0 - alpha);
+            alpha = 1.0;
+            break;
+          }
+          
+          if (r > 30.0) {
+            float starVal = hash(vec2(rdX * 400.0 + rdY * 200.0, rdZ * 300.0));
+            starVal = pow(starVal, 35.0) * 0.3;
+            color = color + vec3(starVal) * (1.0 - alpha);
+            break;
+          }
+          
+          float cx = posY * velZ - posZ * velY;
+          float cy = posZ * velX - posX * velZ;
+          float cz = posX * velY - posY * velX;
+          float h2 = cx * cx + cy * cy + cz * cz;
+          
+          // Optimize: reuse r2 and combine divisions
+          float rInv = 1.0 / r;
+          float rHatX = posX * rInv;
+          float rHatY = posY * rInv;
+          float rHatZ = posZ * rInv;
+          float accel = 1.5 * RS * h2 / (r2 * r2);
+          
+          velX = velX - rHatX * accel * stepSize;
+          velY = velY - rHatY * accel * stepSize;
+          velZ = velZ - rHatZ * accel * stepSize;
+          
+          float velLen = sqrt(velX * velX + velY * velY + velZ * velZ);
+          velX = velX / max(velLen, 0.001);
+          velY = velY / max(velLen, 0.001);
+          velZ = velZ / max(velLen, 0.001);
+          
+          stepSize = ADAPTIVE_STEP + 0.06 * smoothstep(RS * 2.0, RS * 8.0, r);
+          
+          // Volumetric disk sampling at current position
+          vec4 diskSample = sampleDiskVolume(vec3(posX, posY, posZ), vec3(velX, velY, velZ));
+          if (diskSample.a > 0.01) {
+            float contribution = diskSample.a * stepSize * 8.0 * (1.0 - alpha);
+            color = color + diskSample.rgb * contribution;
+            alpha = alpha + contribution * 0.5;
+          }
+          
+          // Secondary lensed arcs: mirrored images from disk underside
+          // Gravitational lensing causes light from below to appear above/below main disk
+          // DRAMATICALLY enhanced for clear visibility of backside
+          if (abs(posY) > 0.05 && r > DISK_INNER * 0.6 && r < DISK_OUTER * 3.0) {
+            // Sample the disk from below (flipped Y coordinate)
+            vec4 lensedSample = sampleDiskVolume(vec3(posX, -posY * 1.1, posZ), vec3(velX, -velY, velZ));
+            if (lensedSample.a > 0.005) {
+              // Much stronger contribution - backside must be clearly visible
+              float distanceFactor = smoothstep(DISK_OUTER * 3.0, DISK_INNER * 0.6, r);
+              float heightFactor = smoothstep(0.05, 2.0, abs(posY));
+              // Increased from 0.35 to 0.75 - nearly as bright as main disk
+              float lensedContribution = lensedSample.a * stepSize * 8.0 * (1.0 - alpha) * 0.75 * distanceFactor * heightFactor;
+              
+              // Apply blue-shift for different viewing angle (physical realism)
+              // Lensed light from behind appears cooler/bluer due to viewing geometry
+              vec3 blueShiftedColor = lensedSample.rgb;
+              blueShiftedColor.b = blueShiftedColor.b * 1.15; // Boost blue channel
+              blueShiftedColor.r = blueShiftedColor.r * 0.92; // Reduce red channel
+              blueShiftedColor.g = blueShiftedColor.g * 0.96; // Slightly reduce green
+              
+              color = color + blueShiftedColor * lensedContribution;
+              alpha = alpha + lensedContribution * 0.6;
+            }
+          }
+          
+          float newPosX = posX + velX * stepSize;
+          float newPosY = posY + velY * stepSize;
+          float newPosZ = posZ + velZ * stepSize;
+          
+          ${
+            quality.jetEnabled
+              ? `
+          vec4 jetSample = sampleJet(vec3(posX, posY, posZ));
+          if (jetSample.a > 0.01) {
+            float a = jetSample.a * 0.008 * (1.0 - alpha);
+            color = color + jetSample.rgb * a;
+            alpha = alpha + a * 0.2;
+          }
+          `
+              : ""
+          }
+          
+          // Photon ring: thin, sharp Gaussian at critical impact radius
+          // I_ring(r) = A exp(-(r-r_c)²/2σ²)
+          float ringDist = abs(r - PHOTON_RING);
+          float sigma = 0.08; // Narrow ring width
+          float ringIntensity = exp(-ringDist * ringDist / (2.0 * sigma * sigma));
+          
+          // === PORTAL MOMENT - slow breathing cycle for photon ring ===
+          // Creates a subtle "alive" feeling - the event horizon breathes
+          float portalCycle = sin(u_time * 0.4) * 0.5 + 0.5;  // Slow 15s cycle
+          float portalIntensity = 0.85 + 0.25 * portalCycle;  // 0.85 to 1.1 intensity
+          
+          // Photon ring brightness increases during approach
+          float approachFactor = (u_cameraZoom - 1.0) / 4.0; // 0 to 1 as zoom goes 1 to 5
+          
+          // Micro shimmer: α(b,t) = α(b)[1+ε sin(ωt)], ε ≈ 0.01
+          // Combined with portal breathing for spacetime effect
+          float shimmer = 1.0 + 0.01 * sin(u_time * 8.0 + r * 5.0);
+          
+          // Photon ring with subtle blue-white tint during portal peaks
+          vec3 ringColor = mix(vec3(1.15, 1.05, 0.95), vec3(1.1, 1.15, 1.25), portalCycle * 0.3);
+          
+          // Hover effect: ring glows subtly when hovering (0-30% brightness increase)
+          float hoverBoost = 1.0 + u_hover * 0.3;
+          
+          // Apply portal breathing to ring contribution
+          float ringContribution = ringIntensity * (0.35 + approachFactor * 0.4) * shimmer * portalIntensity * hoverBoost * (1.0 - alpha);
+          color = color + ringColor * ringContribution;
+          
+          // Accumulate ring mask for bloom
+          ringMask = max(ringMask, ringIntensity);
+          
+          // Inner rim mask (near ISCO)
+          float innerRimDist = abs(r - DISK_INNER);
+          float innerRimMask = exp(-innerRimDist * innerRimDist / 0.3);
+          ringMask = max(ringMask, innerRimMask * 0.5);
+          
+          posX = newPosX;
+          posY = newPosY;
+          posZ = newPosZ;
+          
+          // Removed redundant check (moved to loop start)
+        }
+        
+        // === EINSTEIN RING and SECONDARY LENSED ARCS ===
+        float rayClosest = -camX * rdX - camY * rdY - camZ * rdZ;
+        if (rayClosest > 0.0) {
+          float cpX = camX + rdX * rayClosest;
+          float cpY = camY + rdY * rayClosest;
+          float cpZ = camZ + rdZ * rayClosest;
+          float closestR = sqrt(cpX * cpX + cpY * cpY + cpZ * cpZ);
+          
+          // Portal moment sync for arcs (breathes with photon ring)
+          float arcPortal = sin(u_time * 0.4) * 0.5 + 0.5;
+          float arcIntensity = 0.8 + 0.3 * arcPortal;
+          
+          // Einstein ring at ~2.6 Rs
+          float erDist = closestR - RS * 2.6;
+          float einsteinRing = exp(-erDist * erDist * 70.0);
+          color = color + vec3(1.0, 0.88, 0.65) * einsteinRing * 0.35 * arcIntensity * (1.0 - alpha * 0.7);
+        }
+        
+        // === ISCO GAP indicator - subtle dark ring between photon sphere and disk ===
+        float screenR = length(uv);
+        float iscoScreenR = 0.08;  // Approximate screen position of ISCO
+        float gapDist = abs(screenR - iscoScreenR);
+        float iscoGap = 1.0 - exp(-gapDist * gapDist * 800.0) * 0.15;
+        color = color * iscoGap;
+        
+        ${
+          quality.bloomEnabled
+            ? `
+        float lum = dot(color, vec3(0.299, 0.587, 0.114));
+        float bloomMult = smoothstep(0.6, 2.0, lum) * 0.2;
+        color = color + color * bloomMult;
+        `
+            : ""
+        }
+        
+        // ACES Filmic Tone Mapping (preserves color saturation)
+        // Narkowicz 2015, "ACES Filmic Tone Mapping Curve"
+        color.x = (color.x * (2.51 * color.x + 0.03)) / (color.x * (2.43 * color.x + 0.59) + 0.14);
+        color.y = (color.y * (2.51 * color.y + 0.03)) / (color.y * (2.43 * color.y + 0.59) + 0.14);
+        color.z = (color.z * (2.51 * color.z + 0.03)) / (color.z * (2.43 * color.z + 0.59) + 0.14);
+        
+        // Gamma correction (sRGB gamma 2.2)
+        color = pow(clamp(color, 0.0, 1.0), vec3(0.4545));
+        
+        // Step 5: Blue noise dithering to eliminate banding
+        // Triangular dither (TPDF) - perceptually superior to white noise
+        float dither1 = fract(sin(dot(gl_FragCoord.xy, vec2(12.9898, 78.233))) * 43758.5453);
+        float dither2 = fract(sin(dot(gl_FragCoord.xy + vec2(1.0), vec2(12.9898, 78.233))) * 43758.5453);
+        float dither = (dither1 + dither2 - 1.0) / 255.0; // Triangular distribution
+        color = color + vec3(dither);
+        
+        float vigDist = length(uv);
+        color = color * (0.92 + 0.08 * (1.0 - smoothstep(0.5, 1.4, vigDist)));
+        
+        ${fragColorVar} = vec4(color, 1.0);
+      }
+    `
+
+    function compileShader(source: string, type: number): WebGLShader | null {
+      const shader = glContext!.createShader(type)
+      if (!shader) {
+        console.error("[v0] Failed to create shader")
+        return null
+      }
+      glContext!.shaderSource(shader, source)
+      glContext!.compileShader(shader)
+      if (!glContext!.getShaderParameter(shader, glContext!.COMPILE_STATUS)) {
+        const error = glContext!.getShaderInfoLog(shader)
+        console.error("[v0] Shader compile error:", error)
+        setShaderError(error?.substring(0, 500) || "Unknown shader error")
+        return null
+      }
+      return shader
+    }
+
+    const vertexShader = compileShader(vertexShaderSource, glContext.VERTEX_SHADER)
+    const fragmentShader = compileShader(fragmentShaderSource, glContext.FRAGMENT_SHADER)
+    if (!vertexShader || !fragmentShader) {
+      return
+    }
+
+    const shaderProgram = glContext.createProgram()
+    if (!shaderProgram) {
+      setWebglError(true)
+      return
+    }
+    glContext.attachShader(shaderProgram, vertexShader)
+    glContext.attachShader(shaderProgram, fragmentShader)
+    glContext.linkProgram(shaderProgram)
+
+    if (!glContext.getProgramParameter(shaderProgram, glContext.LINK_STATUS)) {
+      const error = glContext.getProgramInfoLog(shaderProgram)
+      console.error("[v0] Program link error:", error)
+      setShaderError(error?.substring(0, 500) || "Program link failed")
+      return
+    }
+
+    const positions = new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1])
+    const buffer = glContext.createBuffer()
+    glContext.bindBuffer(glContext.ARRAY_BUFFER, buffer)
+    glContext.bufferData(glContext.ARRAY_BUFFER, positions, glContext.STATIC_DRAW)
+
+    const positionLoc = glContext.getAttribLocation(shaderProgram, "a_position")
+    glContext.enableVertexAttribArray(positionLoc)
+    glContext.vertexAttribPointer(positionLoc, 2, glContext.FLOAT, false, 0, 0)
+
+    const timeLoc = glContext.getUniformLocation(shaderProgram, "u_time")
+    const resolutionLoc = glContext.getUniformLocation(shaderProgram, "u_resolution")
+    const cameraZoomLoc = glContext.getUniformLocation(shaderProgram, "u_cameraZoom")
+    const viewYawLoc = glContext.getUniformLocation(shaderProgram, "u_viewYaw")
+    const viewPitchLoc = glContext.getUniformLocation(shaderProgram, "u_viewPitch")
+    
+    // Hover interaction uniform location
+    const hoverLoc = glContext.getUniformLocation(shaderProgram, "u_hover")
+    
+    // Tone mapping uniform locations
+    const exposureLoc = glContext.getUniformLocation(shaderProgram, "u_exposure")
+    const gammaLoc = glContext.getUniformLocation(shaderProgram, "u_gamma")
+    const highlightKneeLoc = glContext.getUniformLocation(shaderProgram, "u_highlightKnee")
+    const ringBloomStrengthLoc = glContext.getUniformLocation(shaderProgram, "u_ringBloomStrength")
+    const ringBloomRadiusLoc = glContext.getUniformLocation(shaderProgram, "u_ringBloomRadius")
+    
+    // Redshift amplification uniform locations
+    const shiftExponentLoc = glContext.getUniformLocation(shaderProgram, "u_shiftExponent")
+    const dopplerBlueStrengthLoc = glContext.getUniformLocation(shaderProgram, "u_dopplerBlueStrength")
+    const redshiftWarmStrengthLoc = glContext.getUniformLocation(shaderProgram, "u_redshiftWarmStrength")
+    const androidBoostLoc = glContext.getUniformLocation(shaderProgram, "u_androidBoost")
+
+    const activateProgram = glContext["useProgram"].bind(glContext)
+    activateProgram(shaderProgram)
+
+    let resizeTimeout: NodeJS.Timeout
+    function resize() {
+      if (!canvas) return
+      clearTimeout(resizeTimeout)
+      resizeTimeout = setTimeout(() => {
+        // Cap devicePixelRatio to 1.5 for 50-75% FPS boost on 4K/retina displays
+        // This reduces pixel count from 4x to 2.25x on retina displays
+        const cappedDPR = Math.min(window.devicePixelRatio, 1.5)
+        const dpr = Math.min(cappedDPR * quality.pixelRatio, 2.5)
+        canvas.width = Math.floor(window.innerWidth * dpr)
+        canvas.height = Math.floor(window.innerHeight * dpr)
+        canvas.style.width = window.innerWidth + "px"
+        canvas.style.height = window.innerHeight + "px"
+        glContext!.viewport(0, 0, canvas.width, canvas.height)
+      }, 150)
+    }
+
+    resize()
+    window.addEventListener("resize", resize)
+
+    let isVisible = true
+    function handleVisibilityChange() {
+      isVisible = document.visibilityState === "visible"
+    }
+    document.addEventListener("visibilitychange", handleVisibilityChange)
+
+    const startTime = performance.now()
+    let animationId: number
+    let lastFrameTime = 0
+    let lastSmoothTime = performance.now()
+    const frameInterval = 1000 / quality.targetFPS
+    
+    // Adaptive quality scaling - FPS monitoring
+    let fpsHistory: number[] = []
+    let lastFpsCheckTime = performance.now()
+    let currentQualityScale = 1.0 // 1.0 = full quality, lower = reduced
+    const MIN_QUALITY_SCALE = 0.5 // Don't go below 50% quality
+    const MAX_QUALITY_SCALE = 1.0
+    const FPS_CHECK_INTERVAL = 1000 // Check FPS every second
+    const LOW_FPS_THRESHOLD = 45
+    const STABLE_FPS_THRESHOLD = 50
+    const LOW_FPS_COUNT_TRIGGER = 3 // Reduce quality after 3 seconds of low FPS
+
+    function render(currentTime: number) {
+      animationId = requestAnimationFrame(render)
+
+      if (!isVisible || contextLost) return
+
+      const elapsed = currentTime - lastFrameTime
+      if (elapsed < frameInterval) return
+
+      lastFrameTime = currentTime - (elapsed % frameInterval)
+      
+      // Per-frame smoothing with exponential lerp (kills jitter)
+      let dt = (currentTime - lastSmoothTime) / 1000
+      dt = Math.min(dt, 1/30) // Clamp dt to prevent spikes on tab focus
+      lastSmoothTime = currentTime
+      const k = 12 // smoothing factor (8-14 for "buttery" feel)
+      const a = 1 - Math.exp(-dt * k)
+      
+      current.current.zoom  += (targets.current.zoom  - current.current.zoom)  * a
+      current.current.hover += (targets.current.hover - current.current.hover) * a
+      current.current.lens  += (targets.current.lens  - current.current.lens)  * a
+      current.current.yaw   += (targets.current.yaw   - current.current.yaw)   * a
+      current.current.pitch += (targets.current.pitch - current.current.pitch) * a
+      
+      // FPS monitoring and adaptive quality scaling
+      const currentFPS = 1000 / elapsed
+      fpsHistory.push(currentFPS)
+      
+      // Check FPS every second and adjust quality
+      if (currentTime - lastFpsCheckTime >= FPS_CHECK_INTERVAL) {
+        const avgFPS = fpsHistory.reduce((a, b) => a + b, 0) / fpsHistory.length
+        
+        // Count how many recent seconds had low FPS
+        const recentLowFPS = fpsHistory.filter(fps => fps < LOW_FPS_THRESHOLD).length
+        const totalChecks = fpsHistory.length
+        
+        // Reduce quality if consistently low FPS
+        if (recentLowFPS / totalChecks > 0.7 && currentQualityScale > MIN_QUALITY_SCALE) {
+          currentQualityScale = Math.max(MIN_QUALITY_SCALE, currentQualityScale * 0.8)
+          console.log(`[Adaptive Quality] Reduced to ${(currentQualityScale * 100).toFixed(0)}% (FPS: ${avgFPS.toFixed(1)})`)
+        }
+        // Gradually increase quality when FPS is stable
+        else if (avgFPS > STABLE_FPS_THRESHOLD && currentQualityScale < MAX_QUALITY_SCALE) {
+          currentQualityScale = Math.min(MAX_QUALITY_SCALE, currentQualityScale * 1.05)
+          console.log(`[Adaptive Quality] Increased to ${(currentQualityScale * 100).toFixed(0)}% (FPS: ${avgFPS.toFixed(1)})`)
+        }
+        
+        fpsHistory = []
+        lastFpsCheckTime = currentTime
+      }
+
+      const time = (performance.now() - startTime) / 1000
+
+      glContext!.uniform1f(timeLoc, time)
+      glContext!.uniform2f(resolutionLoc, canvas!.width, canvas!.height)
+      // Use smoothed current values (NOT props) to eliminate jitter
+      glContext!.uniform1f(cameraZoomLoc, current.current.zoom)
+      glContext!.uniform1f(viewYawLoc, current.current.yaw)
+      glContext!.uniform1f(viewPitchLoc, current.current.pitch)
+      glContext!.uniform1f(hoverLoc, current.current.hover)
+      
+      // Set tone mapping uniforms (physics-preserving defaults)
+      // Mobile-optimized: slightly lower exposure and higher highlight knee to prevent washout
+      const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+      const exposure = isMobile ? 0.85 : 1.0;     // Reduced exposure on mobile
+      const highlightKnee = isMobile ? 0.75 : 1.0; // Tighter highlight compression on mobile
+      const gamma = isMobile ? 2.0 : 2.2;          // Slightly lower gamma for richer colors
+      
+      glContext!.uniform1f(exposureLoc, exposure)
+      glContext!.uniform1f(gammaLoc, gamma)
+      glContext!.uniform1f(highlightKneeLoc, highlightKnee)
+      glContext!.uniform1f(ringBloomStrengthLoc, ringBloomStrength) // Ring bloom (0.3 default, 0.5 during anticipation)
+      glContext!.uniform1f(ringBloomRadiusLoc, 0.15)  // Narrow bloom radius
+      
+      // Set redshift amplification uniforms
+      glContext!.uniform1f(shiftExponentLoc, shiftExponent)
+      glContext!.uniform1f(dopplerBlueStrengthLoc, dopplerBlueStrength)
+      glContext!.uniform1f(redshiftWarmStrengthLoc, redshiftWarmStrength)
+      
+      // Android color boost (1.8x brightness + saturation for Android Chrome)
+      const androidBoost = isAndroid ? 1.8 : 1.0
+      glContext!.uniform1f(androidBoostLoc, androidBoost)
+      
+      glContext!.drawArrays(glContext!.TRIANGLE_STRIP, 0, 4)
+    }
+
+    animationId = requestAnimationFrame(render)
+
+    return () => {
+      window.removeEventListener("resize", resize)
+      document.removeEventListener("visibilitychange", handleVisibilityChange)
+      clearTimeout(resizeTimeout)
+      cancelAnimationFrame(animationId)
+    }
+  }, [cameraZoom, viewYaw, viewPitch])
+
+  if (shaderError) {
+    return (
+      <div className="w-full h-full flex items-center justify-center bg-black">
+        <div className="text-center px-6 max-w-lg">
+          <div className="text-white/90 text-lg mb-4">Visualization Error</div>
+          <div className="text-white/60 text-sm mb-4">The graphics shader failed to compile on your device.</div>
+          <details className="text-left">
+            <summary className="text-white/70 text-xs cursor-pointer mb-2">Technical Details</summary>
+            <pre className="text-white/50 text-xs overflow-auto max-h-32 p-2 bg-white/5 rounded">{shaderError}</pre>
+          </details>
+        </div>
+      </div>
+    )
+  }
+
+  if (webglError) {
+    return (
+      <div className="w-full h-full flex items-center justify-center bg-black">
+        <div className="text-center px-6 max-w-md">
+          <div className="text-white/90 text-lg mb-4">Graphics Not Supported</div>
+          <div className="text-white/60 text-sm">This visualization requires WebGL. Please use a modern browser.</div>
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <canvas 
+      ref={canvasRef} 
+      className="w-full h-full block" 
+      style={{ 
+        background: "#000",
+        touchAction: "none", // Prevent default touch behaviors
+        WebkitTouchCallout: "none", // Prevent iOS callout
+        WebkitUserSelect: "none", // Prevent text selection
+        userSelect: "none"
+      }} 
+    />
+  )
+}

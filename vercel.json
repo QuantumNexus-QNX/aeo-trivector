@@ -1,0 +1,29 @@
+{
+  "buildCommand": "pnpm build",
+  "outputDirectory": "out",
+  "framework": "nextjs",
+  "redirects": [
+    {
+      "source": "/:path*",
+      "has": [
+        {
+          "type": "host",
+          "value": "aeotrivector.ai"
+        }
+      ],
+      "destination": "https://aeotrivector.com/:path*",
+      "permanent": true
+    },
+    {
+      "source": "/:path*",
+      "has": [
+        {
+          "type": "host",
+          "value": "trivector.ai"
+        }
+      ],
+      "destination": "https://aeotrivector.com/:path*",
+      "permanent": true
+    }
+  ]
+}
