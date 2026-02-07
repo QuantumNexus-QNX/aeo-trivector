@@ -11,9 +11,14 @@ export default function Entry() {
   const [ready, setReady] = useState(false);
   const [fps, setFps] = useState(60);
   const [qualityTier, setQualityTier] = useState('HIGH');
-  
-  // Detect reduced motion preference
-  const prefersReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const [prefersReducedMotion, setPrefersReducedMotion] = useState(false);
+
+  // Detect reduced motion preference (client-side only)
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      setPrefersReducedMotion(window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+    }
+  }, []);
   
   // Use refs instead of setState for continuous values (kills jitter)
   const zoomRef = useRef(1.0);

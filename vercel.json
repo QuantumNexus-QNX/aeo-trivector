@@ -1,18 +1,26 @@
 {
-  "version": 2,
-  "builds": [
+  "redirects": [
     {
-      "src": "package.json",
-      "use": "@vercel/static-build",
-      "config": {
-        "distDir": "out"
-      }
-    }
-  ],
-  "routes": [
+      "source": "/:path*",
+      "has": [
+        {
+          "type": "host",
+          "value": "aeotrivector.ai"
+        }
+      ],
+      "destination": "https://aeotrivector.com/:path*",
+      "permanent": true
+    },
     {
-      "src": "/(.*)",
-      "dest": "/$1"
+      "source": "/:path*",
+      "has": [
+        {
+          "type": "host",
+          "value": "trivector.ai"
+        }
+      ],
+      "destination": "https://aeotrivector.com/:path*",
+      "permanent": true
     }
   ]
 }
