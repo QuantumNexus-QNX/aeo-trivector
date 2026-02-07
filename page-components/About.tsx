@@ -4,6 +4,7 @@ import { useRef, useState, useEffect } from 'react';
 import { Canvas, useFrame } from '@react-three/fiber';
 import { Attractor } from '@/components/Attractor';
 import { motion } from 'framer-motion';
+import Footer from '@/components/Footer';
 import * as THREE from 'three';
 
 // 3D Group component for Attractor animation
@@ -89,8 +90,8 @@ export default function About() {
             onMouseEnter={() => setIsHovered(true)}
             onMouseLeave={() => setIsHovered(false)}
             style={{
-              background: 'rgba(0, 0, 0, 0.1)',
-              backdropFilter: 'blur(10px)',
+              background: 'rgba(0, 0, 0, 0.4)',
+              backdropFilter: 'blur(12px)',
               border: '1px solid rgba(255, 255, 255, 0.1)',
               boxShadow: isHovered 
                 ? '0 0 50px rgba(255, 215, 0, 0.3), inset 0 0 80px rgba(255, 215, 0, 0.08)' 
@@ -195,6 +196,8 @@ export default function About() {
           </div>
         </div>
       </motion.div>
+
+      <Footer />
     </div>
   );
 }

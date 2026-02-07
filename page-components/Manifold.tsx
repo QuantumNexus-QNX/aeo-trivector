@@ -4,6 +4,7 @@ import { useRef, useState, useEffect } from 'react';
 import { Canvas, useFrame } from '@react-three/fiber';
 import { Attractor } from '@/components/Attractor';
 import { motion } from 'framer-motion';
+import Footer from '@/components/Footer';
 import * as THREE from 'three';
 
 // 3D Group component for Attractor animation
@@ -57,8 +58,8 @@ function Pillar({ icon, title, descriptor, delay }: PillarProps) {
       <div 
         className="relative rounded-2xl p-12 transition-all duration-700 ease-out"
         style={{
-          background: 'rgba(0, 0, 0, 0.1)',
-          backdropFilter: 'blur(8px)',
+          background: 'rgba(0, 0, 0, 0.4)',
+          backdropFilter: 'blur(12px)',
           border: '1px solid rgba(255, 255, 255, 0.1)',
           boxShadow: isHovered 
             ? '0 0 40px rgba(255, 215, 0, 0.3), inset 0 0 60px rgba(255, 215, 0, 0.1)' 
@@ -283,6 +284,8 @@ export default function Manifold() {
           ))}
         </div>
       </div>
+
+      <Footer />
     </div>
   );
 }
