@@ -106,8 +106,10 @@ export function Attractor({
       mesh.current.rotation.z += 0.001 * speed;
       
       // Subtle breathing effect (disabled for reduced motion)
-      const scale = 1 + Math.sin(state.clock.elapsedTime * 0.5) * 0.05;
-      mesh.current.scale.set(scale, scale, scale);
+      // Base scale of 3.5 to make attractor fill screen, plus breathing
+      const baseScale = 3.5;
+      const breathingScale = baseScale + Math.sin(state.clock.elapsedTime * 0.5) * 0.15;
+      mesh.current.scale.set(breathingScale, breathingScale, breathingScale);
     }
   });
 
