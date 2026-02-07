@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useRef, useMemo } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import AccretionDiskVisualization from '@/components/accretion-disk-visualization';
 
 import { motion, AnimatePresence, useMotionValue, useTransform, animate } from 'framer-motion';
@@ -9,10 +9,11 @@ export default function Entry() {
   const [hovering, setHovering] = useState(false);
   const [approaching, setApproaching] = useState(false);
   const [ready, setReady] = useState(false);
-
-  // Detect reduced motion preference (SSR-safe)
+  const [fps, setFps] = useState(60);
+  const [qualityTier, setQualityTier] = useState('HIGH');
   const [prefersReducedMotion, setPrefersReducedMotion] = useState(false);
 
+  // Detect reduced motion preference (client-side only)
   useEffect(() => {
     if (typeof window !== 'undefined') {
       setPrefersReducedMotion(window.matchMedia('(prefers-reduced-motion: reduce)').matches);
