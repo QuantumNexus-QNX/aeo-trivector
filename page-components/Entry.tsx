@@ -1,11 +1,13 @@
 'use client'
 
 import { useState, useEffect, useRef } from 'react';
+import { useRouter } from 'next/navigation';
 import AccretionDiskVisualization from '@/components/accretion-disk-visualization';
 
 import { motion, AnimatePresence, useMotionValue, useTransform, animate } from 'framer-motion';
 
 export default function Entry() {
+  const router = useRouter();
   const [hovering, setHovering] = useState(false);
   const [approaching, setApproaching] = useState(false);
   const [ready, setReady] = useState(false);
@@ -174,7 +176,7 @@ export default function Entry() {
     if (prefersReducedMotion) {
       // Instant transition without animation
       setTimeout(() => {
-        window.location.href = '/manifold';
+        router.push('/manifold');
       }, 150);
       return;
     }
@@ -196,7 +198,7 @@ export default function Entry() {
           setTimeout(() => {
             // Set flag for Manifold page fade-in
             sessionStorage.setItem('fromEventHorizon', 'true');
-            window.location.href = '/manifold';
+            router.push('/manifold');
           }, 600); // Stable black hold at crossing
         }
       });
